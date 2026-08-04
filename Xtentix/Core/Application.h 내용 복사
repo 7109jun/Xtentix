@@ -1,0 +1,17 @@
+#pragma once
+#include <windows.h>
+#include "../UI/MainWindow.h"
+
+namespace Xtentix {
+
+// 프로세스 생명주기(초기화 -> 메시지 루프 -> 종료)를 담당하는 최상위 객체.
+// main()은 이 클래스를 생성/실행하는 것 외에 아무 로직도 갖지 않는다.
+class Application {
+public:
+    int Run(HINSTANCE instance, int cmdShow);
+
+private:
+    MainWindow m_mainWindow;
+};
+
+} // namespace Xtentix
