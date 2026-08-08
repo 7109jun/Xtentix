@@ -1,320 +1,127 @@
-# Skill — Xtentix 완성형 가이드
+# Xtentix Browser
 
-이 문서는 Xtentix 리포지토리를 코드 중심으로 읽고 정리한 실전 스킬 노트입니다. 목표는 "개발자가 코드를 빠르게 이해하고, 확장(Extension)을 설계/구현하며, 문서·빌드·테스트를 바로 정비"할 수 있게 돕는 것입니다.
-
-대상: 리포지토리에 새로 합류한 개발자, 기여자, 혹은 확장 기능을 만들고 싶은 개발자
-
-요약
-- 언어: C++ (C++17)
-- 빌드: CMake (권장: CMake >= 3.20 + MSVC on Windows)
-- 플랫폼: 현재 Windows 중심 (user32, gdi32, gdiplus, winhttp 등 사용)
-- 라이선스: SSPL (상업적 사용 제한 — 주의 필요)
-
-목차
-1. 빠른 시작(빌드 및 실행)
-2. 코드 구조(핵심 파일 매핑)
-3. 코드 읽기 가이드(핵심 진입점과 흐름)
-4. 확장(Extension) 설계: 목표·API·구현 예시
-5. 테스트 및 CI 추천
-6. 문서/기여 가이드라인
-7. 우선순위 체크리스트
+C++17로 처음부터 직접 만든 Windows용 웹 브라우저입니다. Chromium이나 WebView2 같은
+기존 렌더링 엔진을 감싼 게 아니라, HTML 파서·CSS 파서·레이아웃 엔진·렌더러까지
+전부 자체 구현입니다. 사용하는 라이브러리는 Windows OS 기본 API(Win32, GDI+,
+WinHTTP, Shlwapi, Comdlg32)와, 확장 프로그램 실행을 위해 소스 형태로 프로젝트에
+포함된 순정 Lua 5.4.6뿐입니다. 패키지 매니저나 외부 DLL 의존성이 없습니다.
 
 ---
 
-## 1) 빠른 시작 — 빌드 & 실행
-사전 준비
-- Windows (권장: Windows 10/11)
-- Visual Studio 2019/2022 (MSVC)
-- CMake >= 3.20
+## 할 수 있는 것
 
-Visual Studio (권장)에서 빌드
-1. 프로젝트 루트에서 터미널/PowerShell 열기
-2. mkdir build && cd build
-3. cmake -G "Visual Studio 17 2022" ..
-4. cmake --build . --config Release
+**렌더링 파이프라인 (전부 자체 구현)**
+- HTML 파서: 토크나이저 + 트리 빌더, void 요소, RAWTEXT/RCDATA(`script`/`style`/`title`/`textarea`), 암묵적 태그 닫기(`<p>`, `<li>`, `<tr>` 등) 처리
+- CSS 파서: 타입/클래스/아이디/전체 선택자, 콤마 그룹, 자손(` `)/자식(`>`) 콤비네이터, `!important`, `@media` 등 at-rule 안전하게 스킵
+- 캐스케이드 엔진: 특이도 계산, 소스 순서, 인라인 `style=""` 우선순위, 상속(color/font-size 등)
+- 레이아웃 엔진: 박스 모델(margin/border/padding), 블록 스태킹, 인라인 텍스트 자동 줄바꿈, `text-align`, 퍼센트 width, `margin:auto` 가운데 정렬, 리스트 마커(불릿/번호), 이미지 자리표시자(크기만 정확히 예약)
+- GDI+ 렌더러: 안티앨리어싱(도형+텍스트), `border-radius`, `box-shadow`(레이어드 근사 블러), 뷰포트 컬링 + 더블버퍼링으로 스크롤 성능 확보, 화질 3단계(빠름/중간/고화질) 선택 가능
 
-간단한 PowerShell 스크립트 예시(리포지토리에 build.ps1로 추가 권장)
-```powershell name=build.ps1
-$buildDir = "build"
-if (-Not (Test-Path $buildDir)) { New-Item -ItemType Directory $buildDir }
-Push-Location $buildDir
-cmake -G "Visual Studio 17 2022" ..
-cmake --build . --config Release
-Pop-Location
-```
-
-실행
-- 빌드 후 출력 경로(예: build/Release/Xtentix.exe)를 실행.
-
-문제 해결 팁
-- CMake가 Visual Studio generator를 못 찾으면, VS Developer Command Prompt에서 시도.
-- 누락된 라이브러리(예: gdiplus)는 Windows SDK 설치 확인.
+**브라우저 기능**
+- 탭(생성/닫기/전환), 주소창, 링크 클릭(상대/절대 URL 해석), 스크롤(휠+스크롤바, 탭별 위치 기억)
+- 북마크 · 설정 · 쿠키 — 전부 `%APPDATA%\Xtentix\*.json`에 자동 저장 (자체 구현 JSON 파서/직렬화 사용)
+- 새 탭 페이지: 바로가기, 북마크 목록, RSS 뉴스 피드
+- 시크릿 모드(`Ctrl+Shift+N`): 별도의 메모리 전용 쿠키, 북마크 미저장
+- 프로필 내보내기/가져오기: 북마크+쿠키+설정을 JSON 파일 하나로 묶어 다른 PC로 이동 가능
+- 개발자 도구(`F12`): HTML 예쁘게 보기+실시간 편집·적용, 쿠키 보기/추가/삭제, 정적 버그 검사기(누락된 `alt`, 중복 `id`, deprecated 태그 등)
+- Lua 확장 프로그램: `.lua` 파일 하나 = 확장 프로그램 하나(크롬 확장의 단일 파일 버전). `on_page_load(url, html)` 훅으로 페이지 콘텐츠를 가로채거나 변형 가능
 
 ---
 
-## 2) 코드 구조 — 핵심 파일 맵핑
-(파일 목록은 Xtentix/CMakeLists.txt 기반)
-- Browser/main.cpp — 진입점(main)
-- Core/
-  - Application.cpp — 애플리케이션 초기화, 메시지 루프, 전역 리소스
-  - WindowBase.* — 윈도우 래퍼/기본 창 처리
-- UI/
-  - MainWindow.cpp, TabStrip.cpp, AddressBar.cpp, NewTabPage.cpp — 윈도우 UI 컴포넌트
-- Tabs/
-  - Tab.cpp, TabManager.cpp — 탭과 탭 관리 로직
-- Rendering/
-  - HtmlTokenizer.cpp, HtmlParser.cpp, Dom.cpp, Document.cpp — HTML 파싱 및 DOM 구성
-  - CssParser.cpp, CssValues.cpp, StyleResolver.cpp — CSS 파싱 및 스타일 계산
-  - LayoutEngine.cpp — 레이아웃 계산
-  - GdiPainter.cpp — GDI+ 기반 렌더링
-- Network/
-  - HttpClient.cpp — HTTP 요청/응답 처리
-  - RssParser.cpp — RSS 파싱 유틸
-- Bookmark/
-  - BookmarkManager.h/cpp — 북마크 저장/로드(기본 경로: %APPDATA%/Xtentix/bookmarks.json)
-- Utils/
-  - Json.cpp/h — 자체 JSON 파서/구성
-  - ResourceImage.cpp — 리소스 이미지 로딩
-- Resources/app.rc — 리소스(.ico 등)
-- CMakeLists.txt — 빌드 설정
+## 못 하는 것
 
-루트에 큰 파일: 1Xtentix.tar, 2Xtentix.tar — 용도 확인 필요(릴리즈 아티팩트라면 Releases로 이동 권장)
+- **JavaScript 실행 불가.** JS 엔진이 없어서 `<script>`는 파싱만 되고 실행되지 않습니다. 동적 웹앱(SPA)은 대부분 빈 화면으로 보입니다.
+- **실제 이미지 디코딩 없음.** `<img>`는 자리표시자 박스(크기만 정확)로만 표시되고, PNG/JPEG 등은 그려지지 않습니다.
+- **`<table>` 레이아웃 미지원.** 표는 표 형태 배치 없이 일반 블록으로 렌더링됩니다.
+- **flexbox, grid, float, position 미지원.**
+- **뒤로가기/앞으로가기, 방문 기록 없음.**
+- **탭/프로세스 격리 없음.** 단일 프로세스로 동작하며, 탭이 죽으면 전체가 영향받을 수 있습니다.
+- **접근성(스크린리더) 지원 미흡.**
+- **Windows 전용.** macOS/Linux 빌드는 지원하지 않습니다.
+- **완전한 CSS 스펙 준수 아님.** margin collapsing, `em`/`rem`/`calc()`, 모서리별 `border-radius` 등은 생략되어 있습니다.
+
+이 항목들은 의도적으로 뒤로 미룬 것이지 실수로 빠진 게 아닙니다 — 각 소스 파일에 `TODO` 주석으로 남겨뒀습니다.
 
 ---
 
-## 3) 코드 읽기 가이드 — 흐름 파악 포인트
-1. 진입점: Browser/main.cpp
-   - 여기서 Application 인스턴스를 만들고 초기화하는 흐름을 따라가면 앱 전체 생명주기를 이해할 수 있습니다.
-2. Application 초기화: Core/Application.cpp
-   - 전역 리소스(폰트, GDI+ 초기화 등)와 창 생성, 메시지 루프 등록 위치.
-3. 탭/페이지 로드 흐름: TabManager / Tab
-   - Tab에 URL 요청 → Network/HttpClient로 요청 → Rendering 파이프라인(HtmlTokenizer -> HtmlParser -> DOM 생성 -> StyleResolver -> LayoutEngine -> GdiPainter)
-4. 이벤트 훅 포인트
-   - DOM 생성 직후(파싱 완료) — 확장(extension)이 DOM에 접근해 변형할 수 있는 위치
-   - 네트워크 요청 전/후 — 요청을 가로채거나 헤더를 조작할 수 있는 위치
-5. 데이터 및 설정
-   - 북마크: BookmarkManager(DefaultFilePath(), Load/Save) — 파일 기반 자동 저장 전략
-   - 리소스: Resources 폴더 및 app.rc
+## 잘하는 것
 
-읽을 때 체크리스트
-- 파일별 공개 API(메서드)와 내부 구현을 먼저 파악
-- I/O(파일/네트워크) 실패 케이스 확인 — 앱이 어떻게 복구/무시하는지 확인
-- 플랫폼 종속 코드(Win32 API 사용)를 따로 표시(나중에 추상화 가능)
+- **정직한 최소 의존성.** OS 기본 API 외에는 Lua 소스 하나뿐이라, 빌드 환경이 단순하고 배포가 exe 하나로 끝납니다.
+- **가벼움과 빠른 시작.** 무거운 엔진을 감싸지 않아서 실행 파일이 작고 시작이 빠릅니다.
+- **투명한 코드베이스.** 각 레이어(파서/캐스케이드/레이아웃/페인트)가 분리되어 있고, 임의 CSS/HTML 문자열을 넣어 동작을 확인할 수 있는 순수 로직 계층이라 디버깅과 확장이 쉽습니다.
+- **개발자 친화적 확장성.** 확장 프로그램이 `io`/`os`/`process` 접근이 막힌 샌드박스에서 실행되어, 파일시스템이나 프로세스를 건드릴 수 없습니다.
+- **프라이버시 우선 설계.** 시크릿 모드, DevTools 코드 편집 후 네트워크 완전 차단(샌드박스 모드), 프로필을 통째로 들고 다닐 수 있는 이동성.
 
 ---
 
-## 4) 확장(Extension) 설계 — 완성형 안내
-현재 리포지토리에는 확장 시스템이 구현되어 있지 않으므로, "완성형" 확장 시스템을 설계하고 구현하는 방법을 제안합니다. 목표는 확장(또는 플러그인)을 통해 페이지 조작, 네트워크 가로채기, UI 확장 등을 가능하게 하는 것입니다.
+## 배워보기
 
-핵심 설계 목표
-- 안정성: 확장 실패가 브라우저 전체를 다운시키지 않도록 격리
-- 단순성: 기본 C++ 인터페이스로 구현 가능
-- 안전한 로드: 확장은 %APPDATA%/Xtentix/extensions 에 설치, manifest.json 으로 메타데이터 관리
+**빌드**
+```bash
+cmake -B build -G "Visual Studio 17 2022"   # 또는 "MinGW Makefiles"
+cmake --build build
+```
+MSVC 콘솔에서 직접 빌드하려면 `Core`, `Tabs`, `Bookmark`, `Settings`, `UI`,
+`Rendering`, `Network`, `Utils`, `Extensions`, `Extensions/lua`의 `.cpp`/`.c`를
+전부 컴파일하고 `user32 gdi32 gdiplus shlwapi winhttp comctl32 comdlg32`를 링크하면 됩니다.
 
-선택지: 네이티브 플러그인(DLL) vs 스크립트 기반(JS)
-- 네이티브(DLL): 성능 좋음, C++ API 제공. Windows 전용 로드(LoadLibrary). 샌드박스가 어렵고 충돌 위험 존재.
-- 스크립트(JS): Duktape/QuickJS 같은 임베디드 JS 엔진 사용. 안전 제어, 동적 확장 가능. C++ 쪽에서 필요한 훅만 노출.
-
-여기서는 간단한 네이티브 플러그인 인터페이스와 manifest 예시, 그리고 JS 스크립트 방식의 통합 제안을 모두 포함합니다.
-
-확장 디렉터리 및 매니페스트
-- 설치 위치: %APPDATA%\Xtentix\extensions\
-- 각 확장은 폴더로 존재: extensions/my-extension/
-  - manifest.json
-  - dll (native) 또는 script.js (JS)
-
-manifest.json 예시
-```json name=examples/extension/manifest.json
-{
-  "name": "logger",
-  "version": "0.1.0",
-  "description": "로그를 출력하는 확장",
-  "type": "native", // "native" 또는 "script"
-  "entry": "logger.dll", // 또는 script.js
-  "permissions": ["webRequest","domModify"]
-}
+**폴더 구조**
+```
+Browser/     진입점(main.cpp)
+Core/        애플리케이션 생명주기, Win32 윈도우 베이스 클래스
+UI/          탭바, 주소창, 새 탭 페이지, DevTools, 설정 창
+Rendering/   HTML/CSS 파서, 캐스케이드, 레이아웃 엔진, GDI+ 페인터
+Network/     WinHTTP 클라이언트, 쿠키 저장소, RSS 파서
+Tabs/        탭 모델 및 관리자
+Bookmark/    북마크 저장/영속화
+Settings/    설정 저장/영속화
+Utils/       JSON 파서, 문자열 유틸, 프로필 내보내기/가져오기
+Extensions/  Lua 확장 프로그램 매니저 + 벤더링된 Lua 5.4.6 소스
 ```
 
-네이티브 확장 API(헤더 예시)
-```c++ name=examples/extension/IExtension.h
-#pragma once
+**확장 프로그램 만들기**
+`%APPDATA%\Xtentix\Extensions\`에 `.lua` 파일을 놓으면 자동으로 로드됩니다.
+```lua
+EXT_NAME = "내 확장"
+EXT_VERSION = "1.0"
 
-#ifdef _WIN32
-#define EXT_EXPORT extern "C" __declspec(dllexport)
-#else
-#define EXT_EXPORT
-#endif
-
-namespace Xtentix {
-
-struct ExtensionHost {
-    // 간단한 로그 API
-    void (*Log)(const char* msg);
-    // 페이지 URL 반환
-    const char* (*GetCurrentUrl)();
-    // DOM 접근 포인터(간단화) - 실제로는 적절한 DOM 포인터/인터페이스 필요
-    void* dom;
-};
-
-// 확장의 생명주기: 로드될 때 호출
-EXT_EXPORT bool Extension_Initialize(ExtensionHost* host);
-// 확장 해제 전 호출
-EXT_EXPORT void Extension_Shutdown();
-// DOM이 준비되었을 때 호출
-EXT_EXPORT void Extension_OnDomReady(void* dom);
-
-} // namespace Xtentix
+function on_page_load(url, html)
+    xtentix.log("로드됨: " .. url)
+    return html  -- 문자열을 반환하면 그게 새 html이 됨
+end
 ```
+샘플은 `Extensions/samples/hello_extension.lua`에 있습니다.
 
-간단한 네이티브 확장 로더(핵심 포인트)
-- Application 초기화 시 extensions 폴더 스캔
-- manifest.json을 읽어 타입에 따라 로드
-- native: LoadLibrary / GetProcAddress("Extension_Initialize") 호출
-- 실패 시 로그만 남기고 무시
-
-로드 예시 장소: Core/Application.cpp 의 애플리케이션 초기화 루틴 직후에 확장 매니저를 초기화하고, 페이지 파싱/DOM 생성 후 Extension_OnDomReady를 호출하면 확장이 DOM을 읽거나 조작할 수 있음.
-
-간단한 JS 스크립트 확장 통합(권장 안전성)
-- QuickJS 또는 Duktape를 embed
-- 스크립트는 제한된 호스트 API만 호출 (log, getCurrentUrl, addCss, addScript)
-- DOM 조작은 "DOM snapshot" 또는 host->invoke 방식을 통해 안전하게 노출
-
-manifest.json (script 예)
-```json name=examples/extension/manifest-script.json
-{
-  "name": "inject-css",
-  "version": "0.1.0",
-  "type": "script",
-  "entry": "inject.js",
-  "permissions": ["domModify"]
-}
-```
-
-inject.js (예시)
-```javascript name=examples/extension/inject.js
-// 간단 예: 페이지 로드 시 CSS 추가
-host.onDomReady(function() {
-  host.addCss("body { background: #f0f0f0; }");
-});
-```
-
-권장 구현 단계(우선순위)
-1. ExtensionManager 클래스 추가 (Xtentix/Extensions/ExtensionManager.*)
-   - extensions 폴더 스캔, manifest 파싱, 로드/언로드 관리
-2. Application 초기화 시 ExtensionManager 초기화
-3. Rendering 파이프라인에서 DOM 생성 직후 확장 훅 호출
-4. 네이티브 확장의 경우 예외/크래시 보호(try/catch + SEH 고려)
-5. 스크립트 확장 시에는 QuickJS/Duktape 런타임을 프로세스에 내장
-6. 권한 모델(permissions)을 manifest로 제한하여 보안 확보
-
-참고: 네이티브 확장은 강력하지만 안정성 위험이 있으므로 초기에 JS 기반 확장 시스템을 도입한 후, 필요하면 네이티브 확장 지원을 검토하세요.
+**설정/데이터 위치**
+북마크·설정·쿠키는 전부 `%APPDATA%\Xtentix\`에 JSON으로 저장됩니다. 이 폴더를
+통째로 복사하거나, 설정 창의 "내보내기"로 프로필 파일 하나를 뽑아 다른 PC에서
+"가져오기" 하면 그대로 복원됩니다.
 
 ---
 
-## 5) 테스트 및 CI 제안
-권장 우선순위
-1. 유닛 테스트(우선순위 상): Utils/Json, BookmarkManager
-   - 프레임워크: GoogleTest 또는 Catch2 (단일 헤더로 편리)
-2. GitHub Actions 워크플로우
-   - Windows 빌드(매 PR), artifact 업로드
-   - (선택) 정적 분석 단계: clang-tidy 또는 cppcheck
+## 라이선스 조항들
 
-GitHub Actions 간단 예 (Windows 빌드)
-```yaml name=.github/workflows/windows-build.yml
-name: Windows Build
-on: [push, pull_request]
-jobs:
-  build:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Setup CMake
-        uses: jwlawson/actions-setup-cmake@v1
-        with:
-          cmake-version: '3.24.0'
-      - name: Configure
-        run: cmake -S . -B build -G "Visual Studio 17 2022"
-      - name: Build
-        run: cmake --build build --config Release
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: Xtentix-build
-          path: build/**/Xtentix.exe
-```
+이 프로젝트는 **Server Side Public License (SSPL) v1**로 배포됩니다.
 
-유닛 테스트 예(BookmarkManager)
-- 테스트 케이스: 빈 파일/없는 파일 상황에서 Load()가 빈 리스트를 반환, Add/Remove/Contains 동작 확인, Save 후 파일 내용 검증
+SSPL은 AGPL v3를 기반으로 하되, 이 소프트웨어를 **서비스로서 제3자에게 제공하는
+경우**에 대한 조건을 추가한 라이선스입니다. 핵심 조항 요약:
 
----
+1. **자유로운 사용/수정/배포.** 개인 사용, 사내 사용, 코드 수정, 재배포는
+   AGPL과 마찬가지로 자유롭게 허용됩니다.
+2. **소스 공개 의무 (파생 저작물).** 이 소프트웨어를 수정해서 배포하는 경우,
+   수정된 소스 전체를 SSPL로 공개해야 합니다.
+3. **"서비스로서 제공" 조항 (SSPL 고유, Section 13).** 이 소프트웨어의 기능을
+   제3자에게 네트워크를 통해 서비스 형태로 제공하는 경우(예: Xtentix 렌더링
+   엔진을 API나 호스팅 서비스로 제공), **그 서비스를 운영하는 데 필요한
+   모든 소프트웨어(관리 도구, 사용자 인터페이스, API, 배포 자동화 스크립트
+   등을 포함한 전체 스택)의 소스 코드를 SSPL로 공개**해야 합니다. 이 부분이
+   일반 오픈소스 라이선스(MIT/Apache/AGPL)와 가장 크게 다른 지점입니다.
+4. **상표/이름 제한.** "Xtentix"라는 이름은 브랜드로 보호되며, 파생 프로젝트가
+   공식 프로젝트로 오인되지 않게 별도 이름을 쓰는 것을 권장합니다.
+5. **무보증.** 소프트웨어는 "있는 그대로" 제공되며 어떠한 형태의 보증도
+   하지 않습니다.
 
-## 6) 문서·기여 가이드(권장 파일들)
-- README.md: 프로젝트 개요, 빌드/실행, 스크린샷, 라이선스 요약
-- Skill.md: (이 문서)
-- CONTRIBUTING.md: PR 절차, 코드 스타일, 브랜치 정책
-- ISSUE_TEMPLATE.md, PULL_REQUEST_TEMPLATE.md
-- SECURITY.md: 취약점 보고 방법
-
-PR 템플릿 간단 예
-```markdown name=.github/PULL_REQUEST_TEMPLATE.md
-## 요약
-(변경 내용 간단 설명)
-
-## 변경 사항
-- 항목 1
-- 항목 2
-
-## 빌드/테스트 방법
-(로컬에서 검증하는 방법)
-```
-
----
-
-## 7) 우선순위 체크리스트(즉시 적용 가능)
-1. README에 빌드 스니펫 및 디렉터리 구조 보강 (우선)
-2. build.ps1 / build.bat 추가
-3. Skill.md(완성형) 커밋 — 완료
-4. ExtensionManager 스켈레톤 추가(폴더: Xtentix/Extensions)
-5. 간단한 JS 기반 확장 런타임(QuickJS) 통합(스켈레톤)
-6. GoogleTest 기반 Json/Bookmark 테스트 추가
-7. GitHub Actions: Windows 빌드 워크플로우 추가
-8. 대용량 .tar 파일 처리 결정(릴리즈 아티팩트로 이동 권장)
-
----
-
-부록: 빠른 코드 스니펫(확장용 인터페이스 & manifest 예시)
-- manifest.json (예시)
-```json name=examples/extension/manifest.example.json
-{
-  "name": "example-extension",
-  "version": "0.1.0",
-  "type": "script",
-  "entry": "inject.js",
-  "permissions": ["domModify","webRequest"]
-}
-```
-
-- 네이티브 확장 인터페이스 헤더 예시
-```c++ name=examples/extension/ExtensionAPI.h
-#pragma once
-
-struct XtentixHost {
-    void (*Log)(const char* msg);
-    const char* (*GetUrl)();
-    void (*AddCss)(const char* css);
-};
-
-extern "C" __declspec(dllexport) bool Extension_Initialize(XtentixHost* host);
-extern "C" __declspec(dllexport) void Extension_Shutdown();
-extern "C" __declspec(dllexport) void Extension_OnDomReady(void* dom);
-```
-
----
-
-끝. 추가로 제가 바로 구현해드릴 작업들
-- README 보강(빌드 스니펫 + 디렉터리 구조) — 원하시면 지금 커밋합니다.
-- build.ps1 / build.bat 추가 — 바로 커밋 가능합니다.
-- Extensions/ExtensionManager 스켈레톤(C++ 파일 2~3개) 추가 — 바로 커밋 가능합니다.
-- QuickJS 연동 스켈레톤 추가 — QuickJS 소스 포함은 크므로 서브모듈 또는 외부 참조 권장.
-
-어떤 것을 먼저 진행할까요? (예: "1과 2를 추가해줘" 또는 "ExtensionManager 골격을 먼저 만들어줘")
+전문(全文)은 저장소 루트의 `LICENSE` 파일 또는
+<https://www.mongodb.com/licensing/server-side-public-license> 를 참고하세요.
+이 문서의 요약은 법률 자문을 대체하지 않습니다 — 서비스로 제공할 계획이 있다면
+반드시 전문을 직접 확인하시기 바랍니다.
